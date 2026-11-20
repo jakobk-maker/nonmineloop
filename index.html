@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #0e0e10; color: #eee;
+    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+  }
+  main { text-align: center; padding: 24px; width: min(360px, 100%); }
+  h1 { font-size: 1.1rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 28px; color: #aaa; }
+  #play {
+    width: 96px; height: 96px; border-radius: 50%; border: 2px solid #eee;
+    background: transparent; color: #eee; font-size: 2rem; cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  #play:hover:not(:disabled) { background: #eee; color: #0e0e10; }
+  #play:disabled { opacity: .4; cursor: default; }
+  .vol { margin-top: 32px; display: flex; align-items: center; gap: 12px; }
+  .vol input { flex: 1; accent-color: #eee; }
+  #status { margin-top: 20px; font-size: .85rem; color: #888; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Loop</h1>
+  <button id="play" disabled aria-label="Play">&#9654;</button>
+  <div class="vol">
+    <span aria-hidden="true">🔈</span>
+    <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+  </div>
+  <div id="status">Loading…</div>
+</main>
+
+<script>
+  const FILE = "loop.wav"; // change this if your file has a different name
+
+  const playBtn = document.getElementById("play");
+  const volEl = document.getElementById("vol");
+  const statusEl = document.getElementById("status");
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const gain = ctx.createGain();
+  gain.gain.value = parseFloat(volEl.value);
+  gain.connect(ctx.destination);
+
+  let buffer = null;
+  let source = null;
+  let playing = false;
+
+  async function load() {
+    try {
+      const res = await fetch(FILE);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.arrayBuffer();
+      buffer = await ctx.decodeAudioData(data);
+      playBtn.disabled = false;
+      statusEl.textContent = "Ready";
+    } catch (e) {
+      statusEl.textContent = "Could not load " + FILE + " (" + e.message + ")";
+    }
+  }
+
+  function start() {
+    source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;           // sample-accurate gapless loop
+    source.connect(gain);
+    source.start(0);
+  }
+
+  playBtn.addEventListener("click", async () => {
+    if (!buffer) return;
+    if (!playing) {
+      if (ctx.state === "suspended") await ctx.resume();
+      if (!source) start();
+      playing = true;
+      playBtn.innerHTML = "&#10074;&#10074;";
+      playBtn.setAttribute("aria-label", "Pause");
+      statusEl.textContent = "Looping";
+    } else {
+      await ctx.suspend();        // pauses in place, resumes from same spot
+      playing = false;
+      playBtn.innerHTML = "&#9654;";
+      playBtn.setAttribute("aria-label", "Play");
+      statusEl.textContent = "Paused";
+    }
+  });
+
+  volEl.addEventListener("input", () => {
+    gain.gain.value = parseFloat(volEl.value);
+  });
+
+  load();
+</script>
+</body>
+</html>

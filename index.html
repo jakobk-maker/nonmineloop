@@ -3,99 +3,173 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Loop</title>
+<title>Loops</title>
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; min-height: 100vh; display: grid; place-items: center;
-    background: #0e0e10; color: #eee;
+    margin: 0; min-height: 100vh; background: #0e0e10; color: #eee;
     font-family: system-ui, -apple-system, Segoe UI, sans-serif;
   }
-  main { text-align: center; padding: 24px; width: min(360px, 100%); }
-  h1 { font-size: 1.1rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 28px; color: #aaa; }
+  main { max-width: 460px; margin: 0 auto; padding: 40px 20px; }
+  h1 { font-size: 1.1rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 24px; color: #aaa; text-align: center; }
+  .controls { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
   #play {
-    width: 96px; height: 96px; border-radius: 50%; border: 2px solid #eee;
-    background: transparent; color: #eee; font-size: 2rem; cursor: pointer;
+    flex: none; width: 64px; height: 64px; border-radius: 50%; border: 2px solid #eee;
+    background: transparent; color: #eee; font-size: 1.4rem; cursor: pointer;
     transition: background .15s, color .15s;
   }
   #play:hover:not(:disabled) { background: #eee; color: #0e0e10; }
   #play:disabled { opacity: .4; cursor: default; }
-  .vol { margin-top: 32px; display: flex; align-items: center; gap: 12px; }
+  .vol { flex: 1; display: flex; align-items: center; gap: 10px; }
   .vol input { flex: 1; accent-color: #eee; }
-  #status { margin-top: 20px; font-size: .85rem; color: #888; min-height: 1.2em; }
+  #status { font-size: .85rem; color: #888; min-height: 1.2em; margin: 10px 0 18px; text-align: center; }
+  ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid #222; }
+  li button {
+    width: 100%; text-align: left; padding: 14px 8px; background: none; border: 0;
+    border-bottom: 1px solid #222; color: #ccc; font: inherit; cursor: pointer;
+    display: flex; align-items: center; gap: 12px;
+  }
+  li button:hover { background: #17171a; }
+  li.active button { color: #fff; background: #1b1b1f; }
+  .mark { width: 1em; text-align: center; color: #888; }
+  li.active .mark { color: #fff; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Loop</h1>
-  <button id="play" disabled aria-label="Play">&#9654;</button>
-  <div class="vol">
-    <span aria-hidden="true">🔈</span>
-    <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+  <h1>Loops</h1>
+  <div class="controls">
+    <button id="play" disabled aria-label="Play">&#9654;</button>
+    <div class="vol">
+      <span aria-hidden="true">🔈</span>
+      <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+    </div>
   </div>
-  <div id="status">Loading…</div>
+  <div id="status">Loading track list…</div>
+  <ul id="list"></ul>
 </main>
 
 <script>
-  const FILE = "Audio%201-2.2.wav"; // change this if your file has a different name
+  // Repo is detected from the page address (user.github.io/repo/). Fallback below.
+  const OWNER  = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : "jakobk-maker";
+  const REPO   = location.hostname.endsWith(".github.io") ? (location.pathname.split("/")[1] || "nonmineloop") : "nonmineloop";
+  const BRANCH = "main";
+  const EXTS   = /\.(wav|flac|ogg|opus)$/i; // MP3 is left out on purpose: it can't loop gaplessly
 
-  const playBtn = document.getElementById("play");
-  const volEl = document.getElementById("vol");
+  const playBtn  = document.getElementById("play");
+  const volEl    = document.getElementById("vol");
   const statusEl = document.getElementById("status");
+  const listEl   = document.getElementById("list");
 
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   const gain = ctx.createGain();
   gain.gain.value = parseFloat(volEl.value);
   gain.connect(ctx.destination);
 
-  let buffer = null;
+  const cache = new Map();   // file name -> decoded AudioBuffer
+  let tracks = [];
+  let current = -1;
   let source = null;
   let playing = false;
+  let token = 0;             // guards against fast track switching
 
-  async function load() {
+  const prettyName = f => decodeURIComponent(f).replace(/\.[^.]+$/, "").replace(/[_]+/g, " ");
+
+  async function loadList() {
     try {
-      const res = await fetch(FILE);
+      const url = `https://api.github.com/repos/${OWNER}/${REPO}/contents/?ref=${BRANCH}`;
+      const res = await fetch(url);
       if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.arrayBuffer();
-      buffer = await ctx.decodeAudioData(data);
-      playBtn.disabled = false;
-      statusEl.textContent = "Ready";
+      const items = await res.json();
+      tracks = items
+        .filter(i => i.type === "file" && EXTS.test(i.name))
+        .map(i => i.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      if (!tracks.length) { statusEl.textContent = "No audio files found in the repo."; return; }
+      render();
+      statusEl.textContent = "Pick a loop";
     } catch (e) {
-      statusEl.textContent = "Could not load " + FILE + " (" + e.message + ")";
+      statusEl.textContent = "Could not load track list (" + e.message + ")";
     }
   }
 
-  function start() {
-    source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;           // sample-accurate gapless loop
-    source.connect(gain);
-    source.start(0);
+  function render() {
+    listEl.innerHTML = "";
+    tracks.forEach((name, i) => {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.innerHTML = '<span class="mark">&#9654;</span><span></span>';
+      b.lastChild.textContent = prettyName(name);
+      b.addEventListener("click", () => select(i));
+      li.appendChild(b);
+      listEl.appendChild(li);
+    });
+  }
+
+  function markActive() {
+    [...listEl.children].forEach((li, i) => {
+      li.classList.toggle("active", i === current);
+      li.querySelector(".mark").innerHTML = (i === current && playing) ? "&#9835;" : "&#9654;";
+    });
+  }
+
+  function setPlayIcon() {
+    playBtn.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+    playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  }
+
+  async function getBuffer(name) {
+    if (cache.has(name)) return cache.get(name);
+    const res = await fetch(encodeURIComponent(name));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const buf = await ctx.decodeAudioData(await res.arrayBuffer());
+    cache.set(name, buf);
+    return buf;
+  }
+
+  function stopSource() {
+    if (source) { try { source.stop(); } catch (e) {} source.disconnect(); source = null; }
+  }
+
+  async function select(i) {
+    const my = ++token;
+    current = i;
+    playBtn.disabled = true;
+    markActive();
+    statusEl.textContent = "Loading " + prettyName(tracks[i]) + "…";
+    try {
+      const buf = await getBuffer(tracks[i]);
+      if (my !== token) return;              // user clicked something else meanwhile
+      stopSource();
+      source = ctx.createBufferSource();
+      source.buffer = buf;
+      source.loop = true;                    // sample-accurate gapless loop
+      source.connect(gain);
+      source.start(0);
+      if (ctx.state === "suspended") await ctx.resume();
+      playing = true;
+      statusEl.textContent = "Looping: " + prettyName(tracks[i]);
+    } catch (e) {
+      if (my !== token) return;
+      statusEl.textContent = "Could not load " + tracks[i] + " (" + e.message + ")";
+    }
+    playBtn.disabled = false;
+    setPlayIcon();
+    markActive();
   }
 
   playBtn.addEventListener("click", async () => {
-    if (!buffer) return;
-    if (!playing) {
-      if (ctx.state === "suspended") await ctx.resume();
-      if (!source) start();
-      playing = true;
-      playBtn.innerHTML = "&#10074;&#10074;";
-      playBtn.setAttribute("aria-label", "Pause");
-      statusEl.textContent = "Looping";
-    } else {
-      await ctx.suspend();        // pauses in place, resumes from same spot
-      playing = false;
-      playBtn.innerHTML = "&#9654;";
-      playBtn.setAttribute("aria-label", "Play");
-      statusEl.textContent = "Paused";
-    }
+    if (current < 0 || !source) { if (tracks.length) select(Math.max(current, 0)); return; }
+    if (playing) { await ctx.suspend(); playing = false; statusEl.textContent = "Paused"; }
+    else         { await ctx.resume();  playing = true;  statusEl.textContent = "Looping: " + prettyName(tracks[current]); }
+    setPlayIcon();
+    markActive();
   });
 
-  volEl.addEventListener("input", () => {
-    gain.gain.value = parseFloat(volEl.value);
-  });
+  volEl.addEventListener("input", () => { gain.gain.value = parseFloat(volEl.value); });
 
-  load();
+  playBtn.disabled = false;
+  loadList();
 </script>
 </body>
 </html>
